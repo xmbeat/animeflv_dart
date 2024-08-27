@@ -24,7 +24,7 @@ List parseTable(Bs4Element? table) {
 }
 
 // base urls we'll use
-const SEARCH_URL = 'https://animeflv.net/browse?q=';
+const SEARCH_URL = 'https://animeflv.net/browse';
 const BASE_URL = 'https://animeflv.net';
 const BROWSE_URL = 'https://animeflv.net/browse?';
 const ANIME_VIDEO_URL = 'https://animeflv.net/ver/';

@@ -1,12 +1,37 @@
 library animeflv;
 
+import 'package:dio/dio.dart';
 import 'package:http/http.dart' as http;
 import 'package:beautiful_soup_dart/beautiful_soup.dart';
 import 'dart:convert';
 
 import 'globals.dart';
-import 'url_resolvers/streamsb_resolver.dart';
 
+class FilterValue{
+  String name;
+  String value;
+  FilterValue(this.name, this.value);
+  @override
+  String toString() {
+    return "{$name: $value}";
+  }
+}
+class Filter{
+  String name;
+  List<FilterValue> availableValues;
+  bool isMultiple;
+  Filter(this.name, this.availableValues, this.isMultiple);
+  @override
+  String toString() {
+    return "{$name: $availableValues}";
+  }
+}
+class PageResult{
+  int totalPages;
+  int currentPage;
+  List<dynamic> results;
+  PageResult(this.totalPages, this.currentPage, this.results);
+}
 // ===================================================================================================================================================
 // class that will contain all the methods
 class AnimeFlv {
@@ -14,11 +39,11 @@ class AnimeFlv {
   // function to fetch last episodes added to animeflv
   Future<List> getLastEpisodes() async {
     // get request to base animeflv url
-    final res = await http.Client().get(Uri.parse(BASE_URL));
-    if (res.statusCode == 200) {
+    Dio dio = Dio();
+    final res = await dio.get(BASE_URL);
+    if (res.statusCode! == 200) {
       // get html and look for last episodes list
-      final body = res.body.toString();
-      final soup = BeautifulSoup(body);
+      final soup = BeautifulSoup(res.data);
       var lastEpisodes = [];
       final lastEpisodesElements =
           soup.findAll('', selector: '.ListEpisodios li a.fa-play');
@@ -45,11 +70,10 @@ class AnimeFlv {
   // function to get the latest uploaded animes
   Future<List> getLastAddedAnimes() async {
     // get request to base animeflv url
-    final res = await http.Client().get(Uri.parse(BASE_URL));
-    if (res.statusCode == 200) {
+    final res = await Dio().get((BASE_URL));
+    if (res.statusCode! == 200) {
       // get html and look for last animes list
-      final body = res.body.toString();
-      final soup = BeautifulSoup(body);
+      final soup = BeautifulSoup(res.data);
       var lastAnimes = [];
       final lastAnimesElements =
           soup.findAll('', selector: '.ListAnimes article.Anime');
@@ -84,10 +108,10 @@ class AnimeFlv {
   // function to get on air animes
   Future<List> getAiringAnimes() async {
     // get request to base animeflv url
-    final res = await http.Client().get(Uri.parse(BASE_URL));
+    final res = await Dio().get((BASE_URL));
     if (res.statusCode == 200) {
       // get html and look for last animes list
-      final body = res.body.toString();
+      final body = res.data;
       final soup = BeautifulSoup(body);
       var airingAnimes = [];
       final airingAnimesElements = soup.findAll('', selector: '.ListSdbr li');
@@ -112,10 +136,10 @@ class AnimeFlv {
   // function to fetch the download links for the episode with id = given id
   Future<List> downloadLinksByEpisodeId(String id) async {
     // get request using the provided id
-    final res = await http.Client().get(Uri.parse('$ANIME_VIDEO_URL$id'));
-    if (res.statusCode == 200) {
+    final res = await Dio().get('$ANIME_VIDEO_URL$id');
+    if (res.statusCode! == 200) {
       // parse html to string and look for the table with the downloads info
-      final body = res.body.toString();
+      final body = res.data;
       final soup = BeautifulSoup(body);
       final table = soup.find('table', attrs: {'class': 'RTbl'});
 
@@ -185,10 +209,10 @@ class AnimeFlv {
   // function that allows you to search an anime using a query
   Future<List> search(String searchQuery) async {
     // get request with the given query
-    final res = await http.Client().get(Uri.parse('$SEARCH_URL$searchQuery'));
+    final res = await Dio().get('$SEARCH_URL?q=$searchQuery');
     if (res.statusCode == 200) {
       // get the body and look for the animes found
-      final body = res.body.toString();
+      final body = res.data;
       final soup = BeautifulSoup(body);
       final elements = soup.findAll('article', class_: 'Anime alt B');
       var ret = [];
@@ -225,15 +249,109 @@ class AnimeFlv {
     return [];
   }
 
+  Future<PageResult> searchWithFilters({String? query, List<Filter>? filters, int page = 1}) async {
+    String queryParams = '';
+    if (query != null) {
+      queryParams += 'q=$query';
+    }
+    if (filters != null) {
+      for (var filter in filters) {
+        var filterName =  filter.isMultiple ? filter.name + '%5B%5D' : filter.name;
+        for (var value in filter.availableValues) {
+          if (queryParams.isNotEmpty) queryParams += '&';
+          queryParams += '$filterName=${value.name}';
+        }
+      }
+    }
+    String url = SEARCH_URL + "?" +  queryParams;
+    final res = await Dio().get(url);
+    if (res.statusCode == 200) {
+      final body = res.data;      
+      final soup = BeautifulSoup(body);
+      final elements = soup.findAll('article', class_: 'Anime alt B');
+      var ret = [];
+      // for each of the animes found we'll save some data
+      for (var element in elements) {
+        var id =
+            element.find('', selector: 'div.Description a.Button')?['href'];
+        try {
+          ret.add({
+            'id': id?.substring(1, id.length),
+            'title': element.find('', selector: 'a h3')?.string,
+            'poster': element.find('', selector: '.Image figure img')?['src'],
+            'banner': element
+                .find('', selector: '.Image figure img')?['src']
+                ?.replaceAll('covers', 'banners')
+                .trim(),
+            'type': element
+                .find('', selector: 'div.Description p span.Type')
+                ?.string,
+            'synopsis': element
+                .findAll('', selector: 'div.Description p')[1]
+                .string
+                .trim()
+                .replaceAll('<br/>', ''),
+            'rating': element
+                .find('', selector: 'div.Description p span.Vts')
+                ?.string,
+          });
+        } catch (e) {}
+      }
+      final pages = soup.findAll('', selector: '.pagination li');
+      var currentPage = 1;
+      var totalPages = 1;
+      for (var page in pages) {
+        late int pageNumber;
+        try {
+          pageNumber = int.parse(page.a?.text ?? '');
+        } catch (e) {
+          continue;
+        }
+        if (page['class'] == 'active') {
+          currentPage = pageNumber;
+        }
+        if (pageNumber > totalPages) {
+          totalPages = pageNumber;
+        }
+      }
+      return PageResult(totalPages, currentPage, ret);
+    }
+    throw Exception('Error');
+  }
+
+  Future<List<Filter>> getFilters() async {
+    final res = await Dio().get(SEARCH_URL);
+    if (res.statusCode == 200) {
+      final body = res.data;
+      final soup = BeautifulSoup(body);
+      final filters = soup.findAll('', selector: '.filters select');
+      var ret = <Filter>[];
+      for (var filter in filters) {
+        final name = filter['name']?.replaceAll('[]', '') ?? '';
+        final isMultiple = filter['multiple'] != null;
+        final availableValues = filter.findAll('option').map<FilterValue>((option) {
+          return FilterValue(option['value'] ?? '', option.text);
+        }).toList();
+        ret.add(
+          Filter(name, availableValues, isMultiple),
+        );
+      }
+      return ret;
+    }
+    return [];
+  }
+
+  
+
   // =================================================================================================================================================
   // function that gives you the servers of the episode with id = given id
   Future<List> getVideoServers(String episodeId) async {
     // get request with the anime url using the given id
     final res =
-        await http.Client().get(Uri.parse('$ANIME_VIDEO_URL$episodeId'));
+        await Dio().get('$ANIME_VIDEO_URL$episodeId');
     if (res.statusCode == 200) {
       // get html and look for the scripts as animeflv saves the servers in one
-      final body = res.body.toString();
+      final body = res.data;
       final soup = BeautifulSoup(body);
       final scripts = soup.findAll('script');
       var servers = [];
@@ -283,10 +401,10 @@ class AnimeFlv {
   // function to get episodesInfo
   Future<List> _getAnimeEpisodesInfo(String animeId) async {
     // get request with url using given animeId
-    final res = await http.Client().get(Uri.parse('$BASE_URL/$animeId'));
-    if (res.statusCode == 200) {
+    final res = await Dio().get('$BASE_URL/$animeId');
+    if (res.statusCode! == 200) {
       // getting html
-      final body = res.body.toString();
+      final body = res.data;
       final soup = BeautifulSoup(body);
 
       // saving some extra info about the anime that is not about the episodes
